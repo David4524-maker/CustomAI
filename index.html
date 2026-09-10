@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Taller de IA — construye tu propio asistente</title>
+<title>CustomAI - Crea tu propia IA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -477,7 +477,6 @@
           <button id="sendBtn">Enviar</button>
         </div>
       </div>
-      <div class="mode-note" id="modeNote"></div>
 
       <div class="download-block">
         <h2 style="font-size:16px; margin:0;">Llévate tu IA</h2>
@@ -653,23 +652,96 @@
     }
   }
 
-  // ---------- system prompt ----------
-  function buildSystemPrompt(){
-    const tone = toneFor(state.friendliness);
-    return "Te llamas "+ (state.name || "Asistente") +". Eres un asistente de IA personalizado. "+
-      "Tu tono debe ser "+tone.desc+". "+
-      "Tu especialidad y área de conocimiento es: "+ (state.knowledgeText || "temas generales") +". "+
-      "El nivel de tus respuestas debe ser "+state.knowledgeLevel+". "+
-      "Estás pensado específicamente para ayudar a: "+ (state.audience || "cualquier persona") +", así que adapta tu vocabulario y ejemplos a esa audiencia. "+
-      "Responde siempre en español, de forma breve y útil, manteniéndote dentro de tu especialidad cuando sea posible.";
+  // ---------- local reply engine (no API, no server, todo corre en el navegador) ----------
+  const TEMPLATES = {
+    greeting: {
+      formal: ["Buen día. Soy {name}. ¿En qué puedo ayudarle hoy?", "Hola, un gusto saludarle. Soy {name}, especializado en {knowledge}. ¿Qué necesita?"],
+      neutral: ["¡Hola! Soy {name}. ¿En qué te ayudo hoy?", "Hola, qué bueno verte por aquí. ¿Sobre qué quieres hablar?"],
+      friendly: ["¡Hola! 👋 Soy {name}, listo para ayudarte con {knowledge}. ¿Qué se te ocurre?", "¡Hey! Qué gusto verte por aquí. ¿En qué te echo la mano hoy?"]
+    },
+    thanks: {
+      formal: ["Con gusto. Quedo a su disposición.", "Es un placer poder ayudarle."],
+      neutral: ["De nada, para eso estoy.", "Con gusto, cualquier otra duda aquí estoy."],
+      friendly: ["¡De nada! 😊 Aquí ando para lo que necesites.", "¡Un placer! Cuenta conmigo cuando quieras."]
+    },
+    farewell: {
+      formal: ["Hasta luego. Que tenga un buen día.", "Fue un gusto ayudarle. Hasta pronto."],
+      neutral: ["¡Hasta luego! Vuelve cuando quieras.", "Nos vemos, que te vaya bien."],
+      friendly: ["¡Chao! 👋 Aquí te espero para la próxima.", "¡Nos vemos! Que tengas un día genial ✨"]
+    },
+    howAreYou: {
+      formal: ["Muy bien, gracias por preguntar. ¿En qué puedo asistirle?", "Todo en orden por aquí. ¿Cómo puedo ayudarle?"],
+      neutral: ["Todo bien por aquí, ¿y tú? ¿En qué te ayudo?", "Muy bien, gracias. ¿Qué necesitas?"],
+      friendly: ["¡De maravilla! 😄 ¿Y tú? Cuéntame qué necesitas.", "¡Súper! Con ganas de ayudarte, ¿en qué andamos?"]
+    },
+    about: {
+      formal: ["Soy {name}, un asistente enfocado en {knowledge}, pensado especialmente para {audience}.", "Mi función es asistirle en temas de {knowledge}, con un nivel {level}, dirigido a {audience}."],
+      neutral: ["Soy {name}, me especializo en {knowledge} y estoy pensado para {audience}. Pregúntame lo que quieras.", "Te ayudo con temas de {knowledge}, adaptado para {audience}."],
+      friendly: ["¡Soy {name}! 🙂 Mi rollo es {knowledge}, y estoy aquí pensando en {audience}. ¡Pregunta lo que sea!", "Me especializo en {knowledge} y me encanta ayudar a {audience}. ¿Qué quieres saber?"]
+    },
+    question: {
+      formal: ["Sobre {topic}: dentro de mi especialidad en {knowledge}, lo importante es partir de lo esencial. Se lo explico {levelPhrase}, pensando en que esto está dirigido a {audience}.", "En cuanto a {topic}, le comento lo siguiente desde mi enfoque en {knowledge}: conviene considerarlo {levelPhrase}. ¿Desea que profundice en algún punto?"],
+      neutral: ["Sobre {topic}: te lo explico {levelPhrase}, desde mi especialidad en {knowledge}. ¿Quieres que te dé un ejemplo?", "Buena pregunta. Pensando en que esto es para {audience}, te lo cuento {levelPhrase}: lo primero es entender el panorama general y luego ir al detalle."],
+      friendly: ["¡Buena pregunta sobre {topic}! 😊 Te lo explico {levelPhrase}, desde lo que más domino: {knowledge}. ¿Seguimos con un ejemplo?", "Me encanta que preguntes eso. Como esto es para {audience}, te lo cuento {levelPhrase} y sin rollos. ¿Vamos más a fondo?"]
+    },
+    default: {
+      formal: ["Entiendo. Considerando mi especialidad en {knowledge} y que esto está pensado para {audience}, le sugiero abordarlo {levelPhrase}.", "Tomo nota de lo que comenta. Desde mi enfoque en {knowledge}, podríamos revisarlo {levelPhrase}."],
+      neutral: ["Te entiendo. Desde mi especialidad en {knowledge}, y pensando en {audience}, lo abordaría {levelPhrase}. ¿Seguimos?", "Interesante lo que dices. Podemos verlo {levelPhrase}, enfocándonos en {knowledge}."],
+      friendly: ["¡Te sigo! 😄 Desde lo que más sé, {knowledge}, y pensando en ti como parte de {audience}, lo vería {levelPhrase}. ¿Seguimos explorando?", "Me late lo que dices. Vamos a verlo {levelPhrase}, que es justo mi terreno: {knowledge}."]
+    }
+  };
+
+  function warmthBucket(v){ return v <= 35 ? "formal" : (v <= 70 ? "neutral" : "friendly"); }
+
+  function levelPhraseFor(level){
+    if (level === "básico") return "de forma sencilla y sin tecnicismos";
+    if (level === "experto") return "con precisión técnica";
+    return "con un balance entre claridad y detalle";
+  }
+
+  function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+
+  function fillTemplate(str, vars){
+    return str.replace(/\{(\w+)\}/g, function(_, k){ return vars[k] !== undefined ? vars[k] : ""; });
+  }
+
+  function extractTopic(text){
+    let t = text.replace(/[?¿!¡]/g, "").trim();
+    if (t.length > 60) t = t.slice(0, 60).trim() + "…";
+    if (!t) return "eso";
+    return t.charAt(0).toLowerCase() + t.slice(1);
+  }
+
+  function detectIntent(text){
+    const t = text.toLowerCase().trim();
+    if (/^(hola|buenas|hey|qu[eé] tal|buen[oa]s (d[ií]as|tardes|noches))/.test(t)) return "greeting";
+    if (/gracias/.test(t)) return "thanks";
+    if (/(adi[oó]s|chao|hasta luego|nos vemos|^bye)/.test(t)) return "farewell";
+    if (/c[oó]mo est[aá]s|qu[eé] tal est[aá]s/.test(t)) return "howAreYou";
+    if (/qui[eé]n eres|qu[eé] puedes hacer|qu[eé] sabes hacer/.test(t)) return "about";
+    if (/\?|^(qu[eé]|c[oó]mo|cu[aá]l|cu[aá]ndo|d[oó]nde|por qu[eé]|qui[eé]n|cu[aá]nto)/.test(t)) return "question";
+    return "default";
+  }
+
+  function generateReply(userText, forcedIntent){
+    const intent = forcedIntent || detectIntent(userText);
+    const bucket = warmthBucket(state.friendliness);
+    const pool = TEMPLATES[intent] || TEMPLATES.default;
+    const template = pick(pool[bucket]);
+    return fillTemplate(template, {
+      name: state.name || "Asistente",
+      knowledge: state.knowledgeText || "varios temas",
+      audience: state.audience || "cualquier persona",
+      level: state.knowledgeLevel,
+      levelPhrase: levelPhraseFor(state.knowledgeLevel),
+      topic: extractTopic(userText || "")
+    });
   }
 
   // ---------- chat ----------
   const phoneMessages = document.getElementById("phoneMessages");
   const chatInput = document.getElementById("chatInput");
   const sendBtn = document.getElementById("sendBtn");
-  const modeNote = document.getElementById("modeNote");
-  let apiFailed = false;
 
   function addBubble(role, text){
     const b = document.createElement("div");
@@ -683,45 +755,10 @@
   function greet(){
     phoneMessages.innerHTML = "";
     history = [];
-    const tone = toneFor(state.friendliness);
-    const greeting = state.friendliness > 60
-      ? "¡Hola! Soy "+(state.name||"tu asistente")+" 👋 Pregúntame lo que quieras sobre "+(state.knowledgeText||"lo que necesites")+"."
-      : "Hola, soy "+(state.name||"tu asistente")+". Estoy aquí para ayudarte con "+(state.knowledgeText||"tus preguntas")+".";
-    addBubble("bot", greeting);
+    addBubble("bot", generateReply("", "greeting"));
   }
 
-  function fallbackReply(userText){
-    const tone = toneFor(state.friendliness);
-    const openers = state.friendliness > 60
-      ? ["¡Buena pregunta! ", "Claro, te cuento: ", "¡Vamos con eso! "]
-      : ["Sobre eso: ", "Con gusto. ", "Entiendo. "];
-    const opener = openers[Math.floor(Math.random()*openers.length)];
-    return opener + "Como asistente especializado en " + (state.knowledgeText || "este tema") +
-      ", pensado para " + (state.audience || "ti") +
-      ", puedo ayudarte con eso a nivel " + state.knowledgeLevel +
-      ". (Esta es una respuesta de demostración: fuera del entorno de Claude, conecta tu propia clave de la API de Anthropic para respuestas reales.)";
-  }
-
-  async function callModel(userText){
-    const messages = history.concat([{role:"user", content: userText}]);
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        system: buildSystemPrompt(),
-        messages: messages
-      })
-    });
-    if (!response.ok) throw new Error("API error " + response.status);
-    const data = await response.json();
-    const textBlock = (data.content || []).find(function(c){ return c.type === "text"; });
-    if (!textBlock) throw new Error("No text in response");
-    return textBlock.text;
-  }
-
-  async function handleSend(){
+  function handleSend(){
     const text = chatInput.value.trim();
     if (!text) return;
     chatInput.value = "";
@@ -734,19 +771,12 @@
     phoneMessages.appendChild(typing);
     phoneMessages.scrollTop = phoneMessages.scrollHeight;
 
-    let replyText;
-    try {
-      if (apiFailed) throw new Error("skip");
-      replyText = await callModel(text);
-      modeNote.textContent = "";
-    } catch(err){
-      apiFailed = true;
-      replyText = fallbackReply(text);
-      modeNote.textContent = "Modo demostración: fuera de Claude, esta IA necesita tu propia clave de API para responder de verdad.";
-    }
-    typing.remove();
-    addBubble("bot", replyText);
-    history.push({role:"assistant", content:replyText});
+    setTimeout(function(){
+      const replyText = generateReply(text);
+      typing.remove();
+      addBubble("bot", replyText);
+      history.push({role:"assistant", content:replyText});
+    }, 350 + Math.random()*450);
   }
 
   sendBtn.addEventListener("click", handleSend);
@@ -770,22 +800,14 @@
   });
 
   function buildStandaloneHTML(s){
-    const tone = toneFor(s.friendliness);
     const logoHTML = (s.logoType === "image" && s.imageData)
       ? '<img src="'+s.imageData+'" alt="logo">'
       : s.emoji;
-    const systemPromptEscaped = JSON.stringify(
-      "Te llamas "+(s.name||"Asistente")+". Eres un asistente de IA personalizado. "+
-      "Tu tono debe ser "+tone.desc+". "+
-      "Tu especialidad y área de conocimiento es: "+(s.knowledgeText||"temas generales")+". "+
-      "El nivel de tus respuestas debe ser "+s.knowledgeLevel+". "+
-      "Estás pensado específicamente para ayudar a: "+(s.audience||"cualquier persona")+", así que adapta tu vocabulario y ejemplos a esa audiencia. "+
-      "Responde siempre en español, de forma breve y útil, manteniéndote dentro de tu especialidad cuando sea posible."
-    );
     const nameEscaped = JSON.stringify(s.name || "Tu asistente");
-    const knowledgeEscaped = JSON.stringify(s.knowledgeText || "");
-    const audienceEscaped = JSON.stringify(s.audience || "");
+    const knowledgeEscaped = JSON.stringify(s.knowledgeText || "varios temas");
+    const audienceEscaped = JSON.stringify(s.audience || "cualquier persona");
     const levelEscaped = JSON.stringify(s.knowledgeLevel || "intermedio");
+    const templatesEscaped = JSON.stringify(TEMPLATES);
     const friendlinessVal = s.friendliness;
     const accentVal = s.accent;
     const accentSoftVal = s.accentSoft;
@@ -810,29 +832,32 @@
     '.inp{display:flex;gap:8px;padding:12px;border-top:1px solid rgba(0,0,0,0.08);}'+
     '.inp input{flex:1;border:1px solid rgba(0,0,0,0.15);border-radius:20px;padding:9px 14px;font-size:14px;outline:none;font-family:"IBM Plex Sans",sans-serif;}'+
     '.inp button{background:'+accentVal+';color:#fff;border:none;border-radius:20px;padding:0 18px;font-size:14px;cursor:pointer;}'+
-    '.note{font-size:11px;color:#77706a;text-align:center;padding:4px 10px 0;}'+
     '</style></head><body>'+
     '<div class="phone">'+
       '<div class="hd"><div class="av">'+logoHTML+'</div><div><div class="tt">'+ (s.name||"Tu asistente") +'</div><div class="sb">en línea</div></div></div>'+
       '<div class="msgs" id="m"></div>'+
       '<div class="inp"><input id="i" placeholder="Escribe un mensaje…"><button id="b">Enviar</button></div>'+
-      '<div class="note" id="note"></div>'+
     '</div>'+
     '<script>'+
-    'var SYSTEM_PROMPT='+systemPromptEscaped+';'+
     'var NAME='+nameEscaped+';'+
     'var KNOWLEDGE='+knowledgeEscaped+';'+
     'var AUDIENCE='+audienceEscaped+';'+
     'var LEVEL='+levelEscaped+';'+
     'var FRIENDLINESS='+friendlinessVal+';'+
-    'var history=[];var apiFailed=false;'+
-    'var m=document.getElementById("m");var i=document.getElementById("i");var b=document.getElementById("b");var note=document.getElementById("note");'+
+    'var TEMPLATES='+templatesEscaped+';'+
+    'var history=[];'+
+    'var m=document.getElementById("m");var i=document.getElementById("i");var b=document.getElementById("b");'+
+    'function warmthBucket(v){return v<=35?"formal":(v<=70?"neutral":"friendly");}'+
+    'function levelPhraseFor(l){if(l==="básico")return "de forma sencilla y sin tecnicismos";if(l==="experto")return "con precisión técnica";return "con un balance entre claridad y detalle";}'+
+    'function pick(a){return a[Math.floor(Math.random()*a.length)];}'+
+    'function fillTemplate(s2,v){return s2.replace(/\\{(\\w+)\\}/g,function(_,k){return v[k]!==undefined?v[k]:"";});}'+
+    'function extractTopic(t){var x=t.replace(/[?¿!¡]/g,"").trim();if(x.length>60)x=x.slice(0,60).trim()+"…";if(!x)return "eso";return x.charAt(0).toLowerCase()+x.slice(1);}'+
+    'function detectIntent(t){var s2=t.toLowerCase().trim();if(/^(hola|buenas|hey|qu[eé] tal|buen[oa]s (d[ií]as|tardes|noches))/.test(s2))return "greeting";if(/gracias/.test(s2))return "thanks";if(/(adi[oó]s|chao|hasta luego|nos vemos|^bye)/.test(s2))return "farewell";if(/c[oó]mo est[aá]s|qu[eé] tal est[aá]s/.test(s2))return "howAreYou";if(/qui[eé]n eres|qu[eé] puedes hacer|qu[eé] sabes hacer/.test(s2))return "about";if(/\\?|^(qu[eé]|c[oó]mo|cu[aá]l|cu[aá]ndo|d[oó]nde|por qu[eé]|qui[eé]n|cu[aá]nto)/.test(s2))return "question";return "default";}'+
+    'function generateReply(t,fi){var intent=fi||detectIntent(t);var bucket=warmthBucket(FRIENDLINESS);var pool=TEMPLATES[intent]||TEMPLATES.default;var tpl=pick(pool[bucket]);return fillTemplate(tpl,{name:NAME,knowledge:KNOWLEDGE,audience:AUDIENCE,level:LEVEL,levelPhrase:levelPhraseFor(LEVEL),topic:extractTopic(t||"")});}'+
     'function addBubble(role,text){var d=document.createElement("div");d.className="bub "+(role==="user"?"usr":"bot");d.textContent=text;m.appendChild(d);m.scrollTop=m.scrollHeight;return d;}'+
-    'function fallbackReply(t){var opener=FRIENDLINESS>60?"¡Buena pregunta! ":"Sobre eso: ";return opener+"Como asistente especializado en "+(KNOWLEDGE||"este tema")+", pensado para "+(AUDIENCE||"ti")+", puedo ayudarte a nivel "+LEVEL+". (Respuesta de demostración: conecta tu propia clave de la API de Anthropic en el código para respuestas reales.)";}'+
-    'async function callModel(t){var messages=history.concat([{role:"user",content:t}]);var r=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,system:SYSTEM_PROMPT,messages:messages})});if(!r.ok)throw new Error("err");var data=await r.json();var tb=(data.content||[]).find(function(c){return c.type==="text";});if(!tb)throw new Error("no text");return tb.text;}'+
-    'async function send(){var t=i.value.trim();if(!t)return;i.value="";addBubble("user",t);history.push({role:"user",content:t});var typing=document.createElement("div");typing.className="bub bot";typing.style.fontStyle="italic";typing.style.color="#77706a";typing.textContent=NAME+" está escribiendo…";m.appendChild(typing);m.scrollTop=m.scrollHeight;var reply;try{if(apiFailed)throw new Error("skip");reply=await callModel(t);note.textContent="";}catch(e){apiFailed=true;reply=fallbackReply(t);note.textContent="Modo demostración: esta IA necesita tu propia clave de API de Anthropic para responder de verdad fuera de Claude.";}typing.remove();addBubble("bot",reply);history.push({role:"assistant",content:reply});}'+
+    'function send(){var t=i.value.trim();if(!t)return;i.value="";addBubble("user",t);history.push({role:"user",content:t});var typing=document.createElement("div");typing.className="bub bot";typing.style.fontStyle="italic";typing.style.color="#77706a";typing.textContent=NAME+" está escribiendo…";m.appendChild(typing);m.scrollTop=m.scrollHeight;setTimeout(function(){var reply=generateReply(t);typing.remove();addBubble("bot",reply);history.push({role:"assistant",content:reply});},350+Math.random()*450);}'+
     'b.addEventListener("click",send);i.addEventListener("keydown",function(e){if(e.key==="Enter")send();});'+
-    'addBubble("bot", FRIENDLINESS>60 ? ("¡Hola! Soy "+NAME+" 👋 Pregúntame lo que quieras sobre "+(KNOWLEDGE||"lo que necesites")+".") : ("Hola, soy "+NAME+". Estoy aquí para ayudarte con "+(KNOWLEDGE||"tus preguntas")+"."));'+
+    'addBubble("bot", generateReply("", "greeting"));'+
     '<'+'/script></body></html>';
   }
 
